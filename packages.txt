@@ -1,0 +1,2 @@
+libgl1-mesa-glx
+libsdl2-dev

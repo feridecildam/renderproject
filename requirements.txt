@@ -3,4 +3,4 @@ gymnasium
 numpy
 torch
 pandas
-pygame
+pygame-ce
