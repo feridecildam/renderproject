@@ -1,0 +1,6 @@
+streamlit
+gymnasium
+numpy
+torch
+pandas
+pygame
