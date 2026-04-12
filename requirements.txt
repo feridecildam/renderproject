@@ -1,7 +1,8 @@
-streamlit
-gymnasium
-numpy
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch
+streamlit
+gymnasium[toy-text]
+numpy
 pandas
 pygame-ce
 matplotlib
