@@ -49,8 +49,9 @@ class PBRSFrozenLakeWrapper(gym.Wrapper):
         super().__init__(env)
         self.w_hedef = w_hedef
         self.w_delik = w_delik
-        self.satirlar = env.unwrapped.nrow
-        self.sutunlar = env.unwrapped.ncol
+        # Eski ve yeni Gymnasium sürümleri için hata önleyici
+        self.satirlar = getattr(env.unwrapped, 'nrow', 4)
+        self.sutunlar = getattr(env.unwrapped, 'ncol', 4)
         izgara_boyutu = (self.satirlar, self.sutunlar)
         hedef_koordinati = (self.satirlar - 1, self.sutunlar - 1)
         
@@ -64,17 +65,31 @@ class PBRSFrozenLakeWrapper(gym.Wrapper):
         self.eski_koordinat = None
 
     def duruma_koordinat_ver(self, state):
-        return (state // self.sutunlar, state % self.sutunlar)
+        return (int(state) // self.sutunlar, int(state) % self.sutunlar)
 
     def reset(self, **kwargs):
-        state, info = self.env.reset(**kwargs)
+        # Gym sürüm uyuşmazlığını çözen kısım (Tuple kontrolü)
+        reset_result = self.env.reset(**kwargs)
+        if isinstance(reset_result, tuple):
+            state, info = reset_result
+        else:
+            state = reset_result
+            info = {}
+            
         self.eski_koordinat = self.duruma_koordinat_ver(state)
         return state, info
 
     def step(self, action):
-        next_state, reward, terminated, truncated, info = self.env.step(action)
+        # Gym sürüm uyuşmazlığını çözen kısım (4 vs 5 değişken)
+        step_result = self.env.step(action)
+        if len(step_result) == 5:
+            next_state, reward, terminated, truncated, info = step_result
+        else:
+            next_state, reward, done, info = step_result
+            terminated = done
+            truncated = False
+
         yeni_koordinat = self.duruma_koordinat_ver(next_state)
-        
         phi_eski = self.sekillendirici.potansiyel_hesapla(self.eski_koordinat)
         
         if terminated and reward == 0:
@@ -86,7 +101,7 @@ class PBRSFrozenLakeWrapper(gym.Wrapper):
             phi_yeni = self.sekillendirici.potansiyel_hesapla(yeni_koordinat)
         
         ek_odul = (self.sekillendirici.gamma * phi_yeni) - phi_eski
-        sekillendirilmis_odul = reward + ek_odul
+        sekillendirilmis_odul = float(reward) + ek_odul
         self.eski_koordinat = yeni_koordinat
         
         return next_state, sekillendirilmis_odul, terminated, truncated, info
@@ -136,7 +151,7 @@ class DQNAgent:
 
     def state_to_tensor(self, state):
         one_hot = np.zeros(self.durum_sayisi)
-        one_hot[state] = 1.0
+        one_hot[int(state)] = 1.0
         return torch.FloatTensor(one_hot).unsqueeze(0)
 
     def eylem_sec(self, state, epsilon):
@@ -158,8 +173,10 @@ class DQNAgent:
         durumlar_tensor = torch.cat([self.state_to_tensor(s) for s in durumlar])
         sonraki_durumlar_tensor = torch.cat([self.state_to_tensor(s) for s in sonraki_durumlar])
         eylemler_tensor = torch.LongTensor(eylemler).unsqueeze(1)
-        oduller_tensor = torch.FloatTensor(oduller).unsqueeze(1)
-        bitisler_tensor = torch.FloatTensor(bitisler).unsqueeze(1)
+        
+        # PyTorch bool ve float dönüştürme hatalarını çözen kısımlar
+        oduller_tensor = torch.tensor([float(o) for o in oduller], dtype=torch.float32).unsqueeze(1)
+        bitisler_tensor = torch.tensor([float(b) for b in bitisler], dtype=torch.float32).unsqueeze(1)
 
         q_mevcut = self.q_agi(durumlar_tensor).gather(1, eylemler_tensor)
 
@@ -189,11 +206,10 @@ class agentBasedDQN:
         epsilon_min = 0.01
         epsilon_azalma = 0.995
         ardisik_basari = 0
-        print("--- DQN EĞİTİM BAŞLIYOR ---")
+        
         for bolum in range(self.episode):
             state, _ = self.environment.reset()
             done = False
-            toplam_odul = 0
             
             while not done:
                 action = self.agent.eylem_sec(state, epsilon)
@@ -204,10 +220,9 @@ class agentBasedDQN:
                 self.agent.ogren()
                 
                 state = next_state
-                toplam_odul += reward
                 
                 if terminated:
-                    if state == self.durum_sayisi - 1: 
+                    if int(state) == self.durum_sayisi - 1: 
                         ardisik_basari += 1
                     else: 
                         ardisik_basari = 0
@@ -219,10 +234,8 @@ class agentBasedDQN:
                 self.agent.hedef_agi_guncelle()
             
             if ardisik_basari >= 10:
-                print(f"\n*** DQN Ajan yolu tamamen öğrendi! Eğitim {bolum + 1}. bölümde bitiriliyor. ***")
                 break
 
-        # Test kısmı Flask üzerinden çok log basmasın diye hızlıca çalıştırıp geçiyoruz
         test_oyun_sayisi = 5
         basari_sayisi = 0
         test_epsilon = 0.0 
@@ -236,7 +249,7 @@ class agentBasedDQN:
                 state, reward, terminated, truncated, _ = self.environment.step(action)
                 done = terminated or truncated
                 
-                if terminated and state == self.durum_sayisi - 1:
+                if terminated and int(state) == self.durum_sayisi - 1:
                     basari_sayisi += 1
 
         return basari_sayisi
@@ -256,11 +269,12 @@ class QLearningAgent:
         if random.uniform(0, 1) < epsilon:
             return random.randint(0, self.eylem_sayisi - 1)
         else:
-            return np.argmax(self.q_tablosu[state, :])
+            return int(np.argmax(self.q_tablosu[int(state), :]))
 
     def ogren(self, state, action, reward, next_state, done):
+        state, next_state, action = int(state), int(next_state), int(action)
         if done:
-            max_gelecek_q = 0
+            max_gelecek_q = 0.0
         else:
             max_gelecek_q = np.max(self.q_tablosu[next_state, :])
 
@@ -296,7 +310,7 @@ class agentBasedQLearning:
                 
                 state = next_state
                 if terminated:
-                    if state == self.durum_sayisi - 1: 
+                    if int(state) == self.durum_sayisi - 1: 
                         ardisik_basari += 1
                     else: 
                         ardisik_basari = 0
@@ -320,13 +334,13 @@ class agentBasedQLearning:
                 state, reward, terminated, truncated, _ = self.environment.step(action)
                 done = terminated or truncated
                 
-                if terminated and state == self.durum_sayisi - 1:
+                if terminated and int(state) == self.durum_sayisi - 1:
                     basari_sayisi += 1
 
         return basari_sayisi
 
 # =====================================================================
-# 4. FLASK WEB SUNUCUSU (Render API)
+# 4. FLASK WEB SUNUCUSU (API)
 # =====================================================================
 app = Flask(__name__)
 
@@ -350,7 +364,7 @@ def train_dqn():
             "mesaj": f"Egitim tamamlandi. Test sonucu: 5 oyunda {basari} basari."
         })
     except Exception as e:
-        return jsonify({"durum": "hata", "mesaj": str(e)}), 500
+        return jsonify({"durum": "hata", "mesaj": str(e), "detay": "Terminal veya loglari kontrol edin."}), 500
 
 @app.route('/train/qlearning', methods=['GET'])
 def train_qlearning():
