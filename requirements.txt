@@ -1,8 +1,6 @@
+Flask==3.0.2
+gunicorn==21.2.0
+gymnasium==0.29.1
+numpy==1.26.4
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch
-streamlit
-gymnasium[toy-text]
-numpy
-pandas
-pygame-ce
-matplotlib
+torch==2.2.1
