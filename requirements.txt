@@ -4,3 +4,4 @@ gymnasium==0.29.1
 numpy==1.26.4
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.2.1
+Flask-Cors
