@@ -1,13 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 FrozenLake RL Projesi - DQN + Tabular Q-Learning + PBRS
-Düzeltmeler:
-  - Flask route'ları query parametresi destekler hale getirildi
-  - /train/compare endpoint'i eklendi (iki algoritmayı karşılaştırır)
-  - ardisik_basari mantık hatası düzeltildi
-  - 8x8 harita desteği eklendi
-  - Tüm parametreler (w_hedef, w_delik, episode, slippery, harita) dışarıdan ayarlanabilir
-  - Hata yönetimi güçlendirildi
 """
 
 import os
@@ -19,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from flask import Flask, jsonify, request
+from flask_cors import CORS  # <-- EKLENDİ: Tarayıcı hatalarını (Failed to fetch) çözer
 
 # =====================================================================
 # 1. ORTAM VE ÖDÜL ŞEKİLLENDİRME (PBRS Wrapper)
@@ -94,7 +88,6 @@ class PBRSFrozenLakeWrapper(gym.Wrapper):
         yeni_koordinat = self.duruma_koordinat_ver(next_state)
         phi_eski = self.sekillendirici.potansiyel_hesapla(self.eski_koordinat)
 
-        # Deliğe düştüysek öğren: terminated=True ve reward=0
         if terminated and float(reward) == 0.0:
             self.sekillendirici.yeni_delik_ogren(yeni_koordinat)
 
@@ -199,11 +192,12 @@ class agentBasedDQN:
         epsilon_min = 0.01
         epsilon_azalma = 0.995
         ardisik_basari = 0
+        path = []
 
         for bolum in range(self.episode):
             state, _ = self.environment.reset()
             done = False
-
+            
             while not done:
                 action = self.agent.eylem_sec(state, epsilon)
                 next_state, reward, terminated, truncated, _ = self.environment.step(action)
@@ -228,19 +222,25 @@ class agentBasedDQN:
             if ardisik_basari >= 10:
                 break
 
-        # Test aşaması
+        # Test aşaması ve örnek yol çıkarma
         basari_sayisi = 0
-        for _ in range(5):
+        for i in range(5):
             state, _ = self.environment.reset()
             done = False
+            current_path = [int(state)]
             while not done:
                 action = self.agent.eylem_sec(state, 0.0)
                 state, _, terminated, truncated, _ = self.environment.step(action)
                 done = terminated or truncated
+                current_path.append(int(state))
+                
                 if terminated and int(state) == self.durum_sayisi - 1:
                     basari_sayisi += 1
+                    
+            if i == 0: # İlk testin yolunu al
+                path = current_path
 
-        return basari_sayisi
+        return basari_sayisi, path, [] # DQN için q_table dönmüyoruz
 
 # =====================================================================
 # 3. TABULAR Q-LEARNING BİLEŞENLERİ
@@ -301,36 +301,36 @@ class agentBasedQLearning:
             if ardisik_basari >= 10:
                 break
 
-        # Test aşaması
+        # Test aşaması ve örnek yol
         basari_sayisi = 0
-        for _ in range(5):
+        path = []
+        for i in range(5):
             state, _ = self.environment.reset()
             done = False
+            current_path = [int(state)]
             while not done:
                 action = self.agent.eylem_sec(state, 0.0)
                 state, _, terminated, truncated, _ = self.environment.step(action)
                 done = terminated or truncated
+                current_path.append(int(state))
+                
                 if terminated and int(state) == self.durum_sayisi - 1:
                     basari_sayisi += 1
+            if i == 0:
+                path = current_path
 
-        return basari_sayisi
+        # Q Tablosunu listeye çevir (JSON serileştirmesi için)
+        q_table_list = self.agent.q_tablosu.tolist()
+        return basari_sayisi, path, q_table_list
 
 # =====================================================================
 # 4. YARDIMCI: Ortam oluşturucu
 # =====================================================================
 def ortam_olustur(harita="4x4", slippery=False):
-    """
-    harita: "4x4" veya "8x8"
-    slippery: True/False
-    """
     map_name = "4x4" if harita == "4x4" else "8x8"
     return gym.make("FrozenLake-v1", map_name=map_name, is_slippery=slippery)
 
 def parametreleri_al():
-    """
-    URL query string'den parametreleri okur.
-    Örnek: /train/dqn?w_hedef=10&w_delik=10&episode=500&slippery=false&harita=4x4
-    """
     try:
         w_hedef = float(request.args.get("w_hedef", 10.0))
     except ValueError:
@@ -343,7 +343,7 @@ def parametreleri_al():
 
     try:
         episode = int(request.args.get("episode", 500))
-        episode = max(50, min(episode, 2000))  # 50-2000 arasında sınırla
+        episode = max(50, min(episode, 2000))
     except ValueError:
         episode = 500
 
@@ -361,6 +361,9 @@ def parametreleri_al():
 # =====================================================================
 app = Flask(__name__)
 
+# EKLENDİ: Tüm endpointlere her yerden erişim izni verir
+CORS(app) 
+
 @app.route("/")
 def home():
     return jsonify({
@@ -369,15 +372,7 @@ def home():
             "/train/dqn": "Deep Q-Network ile egitim",
             "/train/qlearning": "Tabular Q-Learning ile egitim",
             "/train/compare": "Her iki algoritmayi karsilastir",
-        },
-        "parametreler": {
-            "w_hedef": "PBRS hedef agirligi (varsayilan: 10.0)",
-            "w_delik": "PBRS delik agirligi (varsayilan: 10.0)",
-            "episode": "Bolum sayisi, 50-2000 arasi (varsayilan: 500)",
-            "slippery": "Kaygan zemin: true/false (varsayilan: false)",
-            "harita": "Harita boyutu: 4x4 veya 8x8 (varsayilan: 4x4)",
-        },
-        "ornek": "/train/dqn?w_hedef=10&w_delik=10&episode=500&slippery=false&harita=4x4"
+        }
     })
 
 @app.route("/train/dqn", methods=["GET"])
@@ -386,18 +381,16 @@ def train_dqn():
     try:
         env = ortam_olustur(harita=harita, slippery=slippery)
         ajan = agentBasedDQN(environment=env, episode=episode, w_hedef=w_hedef, w_delik=w_delik)
-        basari = ajan.trainAgent()
+        basari, sample_path, q_table = ajan.trainAgent()
+        
         return jsonify({
             "durum": "basarili",
             "algoritma": "Deep Q-Network (DQN) + PBRS",
-            "parametreler": {
-                "w_hedef": w_hedef,
-                "w_delik": w_delik,
-                "episode": episode,
-                "slippery": slippery,
-                "harita": harita,
-            },
-            "sonuc": f"5 test oyunundan {basari} tanesi basariyla tamamlandi."
+            "parametreler": {"harita": harita, "slippery": slippery},
+            "success_count": basari,
+            "total_tests": 5,
+            "sample_path": sample_path,
+            "q_table": q_table # DQN de boş döner
         })
     except Exception as e:
         return jsonify({"durum": "hata", "mesaj": str(e)}), 500
@@ -408,51 +401,16 @@ def train_qlearning():
     try:
         env = ortam_olustur(harita=harita, slippery=slippery)
         ajan = agentBasedQLearning(environment=env, episode=episode, w_hedef=w_hedef, w_delik=w_delik)
-        basari = ajan.trainAgent()
+        basari, sample_path, q_table = ajan.trainAgent()
+        
         return jsonify({
             "durum": "basarili",
             "algoritma": "Tabular Q-Learning + PBRS",
-            "parametreler": {
-                "w_hedef": w_hedef,
-                "w_delik": w_delik,
-                "episode": episode,
-                "slippery": slippery,
-                "harita": harita,
-            },
-            "sonuc": f"5 test oyunundan {basari} tanesi basariyla tamamlandi."
-        })
-    except Exception as e:
-        return jsonify({"durum": "hata", "mesaj": str(e)}), 500
-
-@app.route("/train/compare", methods=["GET"])
-def train_compare():
-    """Iki algoritmayi ayni parametrelerle egitip sonuclari karsilastirir."""
-    w_hedef, w_delik, episode, slippery, harita = parametreleri_al()
-    try:
-        env_dqn = ortam_olustur(harita=harita, slippery=slippery)
-        ajan_dqn = agentBasedDQN(environment=env_dqn, episode=episode, w_hedef=w_hedef, w_delik=w_delik)
-        basari_dqn = ajan_dqn.trainAgent()
-
-        env_ql = ortam_olustur(harita=harita, slippery=slippery)
-        ajan_ql = agentBasedQLearning(environment=env_ql, episode=episode, w_hedef=w_hedef, w_delik=w_delik)
-        basari_ql = ajan_ql.trainAgent()
-
-        kazanan = "DQN" if basari_dqn > basari_ql else ("Q-Learning" if basari_ql > basari_dqn else "Berabere")
-
-        return jsonify({
-            "durum": "basarili",
-            "parametreler": {
-                "w_hedef": w_hedef,
-                "w_delik": w_delik,
-                "episode": episode,
-                "slippery": slippery,
-                "harita": harita,
-            },
-            "sonuclar": {
-                "DQN": f"5 oyunda {basari_dqn} basari",
-                "Q_Learning": f"5 oyunda {basari_ql} basari",
-                "kazanan": kazanan,
-            }
+            "parametreler": {"harita": harita, "slippery": slippery},
+            "success_count": basari,
+            "total_tests": 5,
+            "sample_path": sample_path,
+            "q_table": q_table # Arayüzde göstermek için Q Tablosu döner
         })
     except Exception as e:
         return jsonify({"durum": "hata", "mesaj": str(e)}), 500
